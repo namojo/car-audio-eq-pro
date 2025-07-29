@@ -270,6 +270,12 @@ class CarAudioEQApp {
     
     async play() {
         try {
+            // Connect audio source if not connected
+            this.audioProcessor.connectSource();
+            
+            // Resume audio context
+            await this.audioProcessor.resume();
+            
             await this.elements.audioElement.play();
             this.isPlaying = true;
             this.elements.playIcon.style.display = 'none';
@@ -281,8 +287,12 @@ class CarAudioEQApp {
         }
     }
     
-    pause() {
+    async pause() {
         this.elements.audioElement.pause();
+        
+        // Suspend audio context to prevent stuck audio
+        await this.audioProcessor.suspend();
+        
         this.isPlaying = false;
         this.elements.playIcon.style.display = 'block';
         this.elements.pauseIcon.style.display = 'none';
@@ -355,9 +365,18 @@ class CarAudioEQApp {
     }
     
     async startCalibration() {
-        if (!this.isPlaying) {
-            this.showError('Please play music before calibrating');
+        // Check if audio file is loaded
+        if (!this.elements.audioElement.src) {
+            this.showError('Please select an audio file first');
             return;
+        }
+        
+        // Auto-play if not playing
+        let wasPlaying = this.isPlaying;
+        if (!this.isPlaying) {
+            await this.play();
+            // Wait a bit for audio to stabilize
+            await new Promise(resolve => setTimeout(resolve, 500));
         }
         
         const measureTime = parseInt(this.elements.measureTime.value) * 1000;
@@ -371,7 +390,8 @@ class CarAudioEQApp {
             const corrections = await this.calibration.calibrate({
                 duration: measureTime,
                 targetCurve: targetCurve,
-                smoothing: smoothing
+                smoothing: smoothing,
+                useTestSignal: false // Use currently playing music
             });
             
             // Apply corrections
@@ -379,6 +399,11 @@ class CarAudioEQApp {
             this.elements.presetSelect.value = 'custom';
             
             this.showSuccess('Calibration completed successfully!');
+            
+            // If we auto-played, pause again
+            if (!wasPlaying) {
+                await this.pause();
+            }
             
         } catch (error) {
             console.error('Calibration failed:', error);
