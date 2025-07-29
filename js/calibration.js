@@ -16,6 +16,7 @@ class Calibration {
         // Measurement settings
         this.measurementData = [];
         this.referenceLevel = -20; // dB
+        this.noiseFloor = -80; // dB threshold for valid measurements
     }
     
     generateHarmanCurve() {
@@ -48,7 +49,7 @@ class Calibration {
             duration = 10000,
             targetCurve = 'flat',
             smoothing = '1/3',
-            useTestSignal = true
+            useTestSignal = false
         } = options;
         
         this.isCalibrating = true;
@@ -73,6 +74,9 @@ class Calibration {
             micAnalyser.smoothingTimeConstant = 0.0; // No smoothing for accuracy
             
             micSource.connect(micAnalyser);
+            
+            // Wait a moment for audio to stabilize
+            await new Promise(resolve => setTimeout(resolve, 1000));
             
             if (useTestSignal) {
                 // Use pink noise for measurement
@@ -140,6 +144,9 @@ class Calibration {
         const sampleRate = analyser.context.sampleRate;
         const startTime = Date.now();
         
+        // Discard first few measurements to let audio stabilize
+        let discardCount = 10;
+        
         return new Promise((resolve) => {
             const measure = () => {
                 const elapsed = Date.now() - startTime;
@@ -153,8 +160,15 @@ class Calibration {
                 // Get frequency data
                 analyser.getFloatFrequencyData(dataArray);
                 
-                // Store measurement
-                this.measurementData.push(new Float32Array(dataArray));
+                // Only store valid measurements (above noise floor)
+                if (discardCount > 0) {
+                    discardCount--;
+                } else {
+                    const maxLevel = Math.max(...dataArray);
+                    if (maxLevel > this.noiseFloor) {
+                        this.measurementData.push(new Float32Array(dataArray));
+                    }
+                }
                 
                 if (elapsed < duration) {
                     requestAnimationFrame(measure);
@@ -168,6 +182,10 @@ class Calibration {
     }
     
     calculateCorrections(targetCurveName, smoothing) {
+        if (this.measurementData.length === 0) {
+            throw new Error('No valid measurement data collected');
+        }
+        
         const targetCurve = this.targetCurves[targetCurveName];
         const frequencies = this.audioProcessor.getFrequencies();
         
@@ -183,18 +201,45 @@ class Calibration {
         // Apply smoothing
         const smoothedResponse = this.applySmoothing(measuredResponse, smoothing);
         
-        // Calculate corrections
+        // Normalize to reference level
+        const maxResponse = Math.max(...smoothedResponse);
+        const normalizedResponse = smoothedResponse.map(v => v - maxResponse + this.referenceLevel);
+        
+        // Calculate corrections with conservative approach
         const corrections = [];
         for (let i = 0; i < frequencies.length; i++) {
             const target = targetCurve[i];
-            const measured = smoothedResponse[i];
-            const correction = target - (measured - this.referenceLevel);
+            const measured = normalizedResponse[i];
+            
+            // Calculate correction needed
+            let correction = target - measured;
+            
+            // Apply conservative factor (don't overcorrect)
+            correction *= 0.7;
             
             // Limit correction range
-            corrections.push(Math.max(-12, Math.min(12, correction)));
+            correction = Math.max(-10, Math.min(10, correction));
+            
+            // Round to nearest 0.5 dB
+            correction = Math.round(correction * 2) / 2;
+            
+            corrections.push(correction);
         }
         
-        return corrections;
+        // Apply additional smoothing to prevent harsh transitions
+        return this.smoothCorrections(corrections);
+    }
+    
+    smoothCorrections(corrections) {
+        const smoothed = [...corrections];
+        
+        // Apply 3-point moving average
+        for (let i = 1; i < smoothed.length - 1; i++) {
+            smoothed[i] = (corrections[i - 1] + corrections[i] + corrections[i + 1]) / 3;
+            smoothed[i] = Math.round(smoothed[i] * 2) / 2; // Round to 0.5 dB
+        }
+        
+        return smoothed;
     }
     
     averageMeasurements() {
@@ -208,13 +253,24 @@ class Calibration {
         // Convert to linear scale, average, then back to dB
         for (let i = 0; i < length; i++) {
             let sum = 0;
+            let count = 0;
+            
             for (const measurement of this.measurementData) {
-                // Convert dB to linear
-                const linear = Math.pow(10, measurement[i] / 20);
-                sum += linear * linear; // Power average
+                // Skip invalid measurements
+                if (measurement[i] > this.noiseFloor) {
+                    // Convert dB to linear
+                    const linear = Math.pow(10, measurement[i] / 20);
+                    sum += linear * linear; // Power average
+                    count++;
+                }
             }
-            const avgLinear = Math.sqrt(sum / this.measurementData.length);
-            averaged[i] = 20 * Math.log10(avgLinear);
+            
+            if (count > 0) {
+                const avgLinear = Math.sqrt(sum / count);
+                averaged[i] = 20 * Math.log10(avgLinear);
+            } else {
+                averaged[i] = this.noiseFloor;
+            }
         }
         
         return averaged;
@@ -227,12 +283,22 @@ class Calibration {
         const response = [];
         
         for (const freq of targetFrequencies) {
-            const bin = Math.round(freq / binWidth);
-            if (bin < fftData.length) {
-                response.push(fftData[bin]);
-            } else {
-                response.push(-100);
+            // Average bins around target frequency for better accuracy
+            const centerBin = freq / binWidth;
+            const startBin = Math.floor(centerBin - 1);
+            const endBin = Math.ceil(centerBin + 1);
+            
+            let sum = 0;
+            let count = 0;
+            
+            for (let bin = startBin; bin <= endBin && bin < fftData.length; bin++) {
+                if (bin >= 0 && fftData[bin] > this.noiseFloor) {
+                    sum += fftData[bin];
+                    count++;
+                }
             }
+            
+            response.push(count > 0 ? sum / count : this.noiseFloor);
         }
         
         return response;
@@ -261,8 +327,10 @@ class Calibration {
             
             for (let j = 0; j < frequencies.length; j++) {
                 if (frequencies[j] >= lowerBound && frequencies[j] <= upperBound) {
-                    sum += data[j];
-                    count++;
+                    if (data[j] > this.noiseFloor) {
+                        sum += data[j];
+                        count++;
+                    }
                 }
             }
             
