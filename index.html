@@ -35,7 +35,7 @@
                 <p id="trackArtist">Choose a file to play</p>
             </div>
             <div class="player-controls">
-                <input type="file" id="fileInput" accept="audio/mp3,audio/mpeg,audio/wav,audio/ogg,audio/aac,audio/flac,audio/m4a,audio/*" style="display: none;">
+                <input type="file" id="fileInput" accept=".mp3,.wav,.ogg,.aac,.flac,.m4a,audio/*" style="display: none;">
                 <button id="chooseFileBtn" class="secondary-btn">Choose File</button>
                 <button id="playPauseBtn" class="play-btn" disabled>
                     <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor">
@@ -149,7 +149,7 @@
         </div>
     </div>
 
-    <audio id="audioElement" crossorigin="anonymous"></audio>
+    <audio id="audioElement"></audio>
     <script src="js/audio-processor.js"></script>
     <script src="js/spectrum-analyzer.js"></script>
     <script src="js/calibration.js"></script>
