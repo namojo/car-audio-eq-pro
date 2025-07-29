@@ -8,6 +8,7 @@ class AudioProcessor {
         this.analyser = null;
         this.limiter = null;
         this.masterGain = null;
+        this.isConnected = false;
         
         // 31-band EQ frequencies (ISO standard)
         this.frequencies = [
@@ -34,9 +35,6 @@ class AudioProcessor {
             // Create audio context
             this.context = new (window.AudioContext || window.webkitAudioContext)();
             
-            // Create source from audio element
-            this.source = this.context.createMediaElementSource(this.audioElement);
-            
             // Create analyser for spectrum visualization
             this.analyser = this.context.createAnalyser();
             this.analyser.fftSize = 4096;
@@ -57,12 +55,22 @@ class AudioProcessor {
             this.masterGain = this.context.createGain();
             this.masterGain.gain.value = 0.95; // Slight headroom
             
-            // Connect audio graph
-            this.connectAudioGraph();
-            
         } catch (error) {
             console.error('Failed to initialize audio processor:', error);
             throw error;
+        }
+    }
+    
+    connectSource() {
+        if (!this.isConnected && this.audioElement.src) {
+            try {
+                // Create source from audio element
+                this.source = this.context.createMediaElementSource(this.audioElement);
+                this.connectAudioGraph();
+                this.isConnected = true;
+            } catch (error) {
+                console.error('Error connecting source:', error);
+            }
         }
     }
     
@@ -97,6 +105,8 @@ class AudioProcessor {
     }
     
     connectAudioGraph() {
+        if (!this.source) return;
+        
         // Connect source to first filter
         let previousNode = this.source;
         
@@ -181,6 +191,19 @@ class AudioProcessor {
         return responses;
     }
     
+    // Suspend context when pausing to prevent stuck audio
+    async suspend() {
+        if (this.context && this.context.state === 'running') {
+            await this.context.suspend();
+        }
+    }
+    
+    async resume() {
+        if (this.context && this.context.state === 'suspended') {
+            await this.context.resume();
+        }
+    }
+    
     // Generate test signals for calibration
     async generateSweep(duration = 10) {
         const sampleRate = this.context.sampleRate;
@@ -245,7 +268,9 @@ class AudioProcessor {
         source.buffer = buffer;
         
         // Disconnect normal audio path temporarily
-        this.source.disconnect();
+        if (this.source) {
+            this.source.disconnect();
+        }
         
         // Connect test signal through filters
         let previousNode = source;
@@ -261,7 +286,9 @@ class AudioProcessor {
         return new Promise((resolve) => {
             source.onended = () => {
                 // Reconnect normal audio path
-                this.connectAudioGraph();
+                if (this.source) {
+                    this.connectAudioGraph();
+                }
                 resolve();
             };
         });
